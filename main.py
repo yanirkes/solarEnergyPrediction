@@ -1,95 +1,181 @@
+from timeit import default_timer as timer
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import KNeighborsRegressor
+from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, train_test_split
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, train_test_split, PredefinedSplit
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.svm import SVR
-from sklearn.decomposition import PCA
-from numpy.random import randint
-import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error
+from dask_ml.wrappers import ParallelPostFit
+
 
 np.random.seed(100465934)
 train = pd.read_pickle('trainst1ns16.pkl')
 test = pd.read_pickle('testst1ns16.pkl')
-
-######### visualization #########
 train_close, test_close = train.iloc[:,0:75], test.iloc[:,0:75]
-train_close.hist()
 
-######### visualization #########
-scalar = StandardScaler().fit(train_close)
-train_close_st = scalar.transform(train_close)
-pca = PCA(n_components=6)
-pca.fit(train_close_st)
-
-
-plt.plot(range(0,len(pca.explained_variance_)), pca.explained_variance_)
-plt.ylabel('Explained Variance')
-plt.xlabel('Principal Components')
-plt.xticks(range(0,len(pca.explained_variance_)),
-           ["1st comp", "2nd comp", "3rd comp", "4rd comp", "5rd comp", "6rd comp" ], rotation=60)
-plt.title('Explained Variance Ratio')
-plt.show()
-
-print("1 to the 6th components explained_variance_ratio_: ", sum(pca.explained_variance_ratio_[0:6]))
-
-######## plot most important columns by components #########
-
-fig, axs = plt.subplots(6,6)
-axs[1, 0].scatter(pca.components_[:, 0],pca.components_[:, 1])
-axs[1, 0].set_title('Axis [1,0]')
-axs[2, 0].scatter(pca.components_[:, 0],pca.components_[:, 2])
-axs[2, 0].set_title('Axis [2,0]')
-axs[3, 0].scatter(pca.components_[:, 0],pca.components_[:, 3])
-axs[3, 0].set_title('Axis [3,0]')
-axs[4, 0].scatter(pca.components_[:, 0],pca.components_[:, 4])
-axs[4, 0].set_title('Axis [4,0]')
-axs[5, 0].scatter(pca.components_[:, 0],pca.components_[:, 5])
-axs[5, 0].set_title('Axis [4,0]')
-
-axs[2, 1].scatter(pca.components_[:, 1],pca.components_[:, 2])
-axs[2, 1].set_title('Axis [2,1]')
-axs[3, 1].scatter(pca.components_[:, 1],pca.components_[:, 3])
-axs[3, 1].set_title('Axis [3,1]')
-axs[4, 1].scatter(pca.components_[:, 1],pca.components_[:, 4])
-axs[4, 1].set_title('Axis [4,1]')
-axs[5, 1].scatter(pca.components_[:, 1],pca.components_[:, 5])
-axs[5, 1].set_title('Axis [5,1]')
-
-axs[3,2].scatter(pca.components_[:, 2],pca.components_[:, 3])
-axs[3,2].set_title('Axis [3,2]')
-axs[4,2].scatter(pca.components_[:, 2],pca.components_[:, 4])
-axs[4,2].set_title('Axis [4,2]')
-axs[5,2].scatter(pca.components_[:, 2],pca.components_[:, 5])
-axs[5,2].set_title('Axis [5,2]')
-
-axs[4,3].scatter(pca.components_[:, 3],pca.components_[:, 4])
-axs[4,3].set_title('Axis [4,3]')
-axs[5,3].scatter(pca.components_[:, 3],pca.components_[:, 5])
-axs[5,3].set_title('Axis [5,3]')
-
-axs[5, 4].scatter(pca.components_[:, 4],pca.components_[:, 5])
-axs[5, 4].set_title('Axis [5,4]')
-
-##### split train and val ########
-train_after_pca = pd.DataFrame(columns=train.columns[0:6],data= pca.fit_transform(train_close_st))
-
-
-x_train, x_val, y_train, y_val = train_test_split(train_after_pca.values,pd.Series(train['energy']))
-
+##### split 10 years train and 2 year val ########
+x_train, x_val, y_train, y_val = train_test_split(train_close.values,pd.Series(train['energy']),train_size=365*10)
 
 ##### train models ############
-knn = KNeighborsRegressor(5).fit(x_train, y_train)
-dt  = DecisionTreeRegressor().fit(x_train,y_train)
-svm = SVR().fit(x_train,y_train)
+scalar = StandardScaler().fit(x_val)
+x_val_st = scalar.transform(x_val)
 
-# intial score
-knn.score(x_val, y_val)
-# 0.7857
+# Predefined Val Split
+validation_idx = np.repeat(-1, y_train.shape)
+validation_idx[np.random.choice(validation_idx.shape[0],
+       int(round(.2*validation_idx.shape[0])), replace = False)] = 0
 
-dt.score(x_val, y_val)
-# 0.6579
+# Now, create a list which contains a single tuple of two elements,
+# which are arrays containing the indices for the development and
+# validation sets, respectively.
+validation_split = list(PredefinedSplit(validation_idx).split())
 
-svm.score(x_val, y_val)
-# 0.0009
+# sanity check
+print(len(validation_split[0][0]))
+print(len(validation_split[0][0])/float(validation_idx.shape[0]))
+print(validation_idx.shape[0] == y_train.shape[0])
+print(set(validation_split[0][0]).intersection(set(validation_split[0][1])))
+
+#### Defaulted Models
+# knn
+scalar = StandardScaler()
+knn = KNeighborsRegressor()
+knnPipiLineDef = Pipeline([
+    ('standartization',scalar),
+    ('model', knn)
+    ])
+knnPipiLineDef.fit(x_train,y_train)
+
+
+# Deision tree
+scalar = StandardScaler()
+dt = DecisionTreeRegressor()
+dtPipiLineDef = Pipeline([
+    ('standartization',scalar),
+    ('model', dt)
+    ])
+dtPipiLineDef.fit(x_train,y_train)
+
+# svm
+scalar = StandardScaler()
+svr = SVR()
+svrPipiLineDef = Pipeline([
+    ('standartization',scalar),
+    ('model', svr)
+    ])
+svrPipiLineDef.fit(x_train,y_train)
+
+########################################## DASK ######################################
+#### Non Defaulted Defaulted Models
+# knn (Evri using dask we were able to run the model in 20-40 % less, check ParallelPostFit)
+# knn
+print('\nKNN\n')
+scalar = StandardScaler()
+knn = ParallelPostFit(KNeighborsRegressor())
+knnPipiLine = Pipeline([
+    ('standartization',scalar),
+    ('model', knn)
+    ])
+gdSearchKnn = GridSearchCV(knnPipiLine
+                           , {'model__estimator__n_neighbors':[1,2,3,4,5,6,7,8]}
+                           , cv = validation_split
+                           ,refit=False
+                           , scoring='neg_mean_absolute_error')
+
+start = timer()
+gdSearchKnn.fit(x_train,y_train)
+train_patched = timer() - start
+print(f"time for KNN: {train_patched:.2f} s")
+print('KNN best hyperparameters: ', gdSearchKnn.best_params_)
+
+print('\nDT\n')
+# Deision tree
+dt = ParallelPostFit(DecisionTreeRegressor())
+dtPipiLine = Pipeline([
+    ('model', dt)
+    ])
+gdSearchDt = RandomizedSearchCV(dtPipiLine
+                                    , {'model__estimator__max_depth':[2, 5, 10, 30, 75, 100]
+                                        , 'model__estimator__min_samples_split': [2, 5, 10, 20, 50]
+                                        , 'model__estimator__max_features': ['auto','sqrt']
+                                        , 'model__estimator__min_samples_leaf': [2,4,10]
+                                        , 'model__estimator__criterion': ['MAE']
+                                      }
+                                    , cv = validation_split
+                                    , refit=False
+                                    , scoring='neg_mean_absolute_error'
+                                )
+
+start = timer()
+gdSearchDt.fit(x_train,y_train)
+train_patched = timer() - start
+print(f"time for DT: {train_patched:.2f} s")
+print('DT best hyperparameters: ', gdSearchDt.best_params_)
+
+print('\nSVM\n')
+# svm
+scalar = StandardScaler()
+svr = ParallelPostFit(SVR())
+svrPipiLine = Pipeline([
+    ('standartization',scalar),
+    ('model', svr)
+    ])
+gdSearchSvr = RandomizedSearchCV(svrPipiLine
+                                    , {'model__estimator__C':[1,2,3,4]
+                                        ,'model__estimator__kernel': ['linear', 'rbf']
+                                      }
+                                    , cv = validation_split,refit=False
+                                    , scoring='neg_mean_absolute_error'
+                                )
+
+start = timer()
+gdSearchSvr.fit(x_train,y_train)
+train_patched = timer() - start
+print(f"time for SVR: {train_patched:.2f} s")
+print('SVR best hyperparameters: ', gdSearchSvr.best_params_)
+
+######### Re-fiting the models with the best params ##########
+knn = ParallelPostFit(KNeighborsRegressor(n_neighbors=8))
+knnPipiLine = Pipeline([
+    ('standartization',scalar),
+    ('model', knn)
+    ])
+knnPipiLine.fit(x_train,y_train)
+
+DT = ParallelPostFit(DecisionTreeRegressor(min_samples_split=10, min_samples_leaf = 10, max_features= 'auto', max_depth = 10))
+DtPipiLine = Pipeline([
+    ('model', DT)
+    ])
+DtPipiLine.fit(x_train,y_train)
+
+svr = ParallelPostFit(SVR(kernel = 'linear', C = 3))
+SvrPipiLine = Pipeline([
+    ('standartization',scalar),
+    ('model', svr)
+    ])
+SvrPipiLine.fit(x_train,y_train)
+
+######## Models Comparison #####################
+print('\nDeafult result')
+print('KNN Default MSE: ', round(mean_absolute_error(y_val, knnPipiLineDef.predict(x_val_st)), 4))
+print('DT Default MSE: ', round(mean_absolute_error(y_val, dtPipiLineDef.predict(x_val)), 4))
+print('SVR Default MSE: ', round(mean_absolute_error(y_val, svrPipiLineDef.predict(x_val_st)), 4))
+print('\nHyperparameter optimization modeled result')
+print('KNN MSE: ', round(mean_absolute_error(y_val, knnPipiLine.predict(x_val_st)), 4))
+print('DT MSE: ', round(mean_absolute_error(y_val, DtPipiLine.predict(x_val)), 4))
+print('SVR MSE: ', round(mean_absolute_error(y_val, SvrPipiLine.predict(x_val_st)), 4))
+
+######## DT regressor the best model
+x = train.iloc[:, 0:75]
+y = train.iloc[:, -1]
+final_DT = ParallelPostFit(DecisionTreeRegressor(min_samples_split=10, max_features= 'sqrt', max_depth = 5))
+DtFinalPipiLine = Pipeline([
+    ('model', final_DT)
+    ])
+DtFinalPipiLine.fit(x,y)
+x_test = test.iloc[:, 0:75]
+y_test = test.iloc[:, -1]
+print('DT MSE: ', round(mean_absolute_error(y_test, DtFinalPipiLine.predict(x_test)), 4))
